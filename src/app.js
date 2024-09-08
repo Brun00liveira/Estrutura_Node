@@ -1,10 +1,12 @@
 const express = require('express');
-const app =  express();
+const app = express();
 
 app.use(express.json());
 
-const api = require('./routes/api')
+const auth = require('./routes/auth')
+const public = require('./routes/public')
 
-app.use('/api', api);
+app.use('/api', auth);
+app.use('/auth', public);
 
 module.exports = app;

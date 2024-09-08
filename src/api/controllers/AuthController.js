@@ -1,90 +1,133 @@
-const { User } = require('../models'); 
+const { User } = require('../models');
+const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
+const { Token, PasswordResetToken } = require('../models');
 
-
-const index = async (req, res) => {
-  try {
-    const users = await User.findAll();
-    res.json(users);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-};
-
-
-const edit = async (req, res) => {
-  try {
-    const id = req.params.id;
-    const user = await User.findByPk(id);
-
-    if (!user) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-
-    res.json(user);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-};
-
-
-const create = async (req, res) => {
-  try {
+const register = async (req, res) => {
     const request = req.body;
-    console.log(request);
+    const email = request.email;
+
+    const user = await User.findOne({where:{ email }})
+    if(user){
+        return res.status(400).json({ error: 'User already exists' });
+    }
+
+    const hashedPassword = await bcrypt.hash(request.password, 10);
+    request.password = hashedPassword;
+
+    const newUser = await User.create(request)
+
+    return res.status(201).json({ message: 'User created successfully', user: newUser });
+
+}
+
+const login = async (req, res) => {
+    try {
+        const request = req.body;
+
+        const email = request.email;
     
-   
-    const newUser = await User.create(request);
-    res.status(201).json(newUser);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-};
+        const user = await User.findOne({where:{ email }})
+
+        if (!user) {
+            return res.status(400).json({ error: 'Invalid email or password' });
+        }
+    
+        const isMatch = await bcrypt.compare(request.password, user.password);
+
+        if (!isMatch) {
+            return res.status(400).json({ error: 'Invalid email or password' });
+        }
+
+        const accessToken = jwt.sign({ id: user.id, name: user.name }, process.env.TOKEN_SECRET, { expiresIn: '1h' });
+        res.json({ accessToken });
+    }catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+}
+
+const logout = async (req, res) => {
+    try {
+        const token = req.headers.authorization.split(' ')[1];
+
+        // Decodificar o token para obter o tempo de expiração
+        const decodedToken = jwt.decode(token);
+        const expiresAt = new Date(decodedToken.exp * 1000); // Converte para formato de data
+
+        // Salvar o token na tabela jwt_blacklist
+        await Token.create({
+            token,
+            expires_at: expiresAt,
+        });
+
+        return res.status(200).json({ message: 'Logout successful' });
+    } catch (error) {
+        return res.status(500).json({ error: 'Failed to logout' });
+    }
+};  
 
 
-const update = async (req, res) => {
-  try {
-    const id = req.params.id;
-    const { name, email } = req.body;
 
+const forgotPassword = async (req, res) => {
+    const { email } = req.body;
 
-    const user = await User.findByPk(id);
-
+    // Encontre o usuário pelo e-mail
+    const user = await User.findOne({ where: { email } });
     if (!user) {
-      return res.status(404).json({ error: 'User not found' });
+        return res.status(400).json({ error: 'User not found' });
     }
 
-    // Atualiza o usuário
-    await user.update({ name, email });
-    res.json(user); // Retorna o usuário atualizado
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
+    // Crie um token de redefinição
+    const token = require('crypto').randomBytes(32).toString('hex');
+    const expiresAt = new Date(Date.now() + 3600 * 1000); // Token válido por 1 hora
+
+    // Salve o token na base de dados
+    await PasswordResetToken.create({
+        user_id: user.id,
+        token,
+        expires_at: expiresAt,
+    });
+
+
+    try {
+        
+        return res.status(200).json({ message: 'Password reset link sent to your email' });
+    } catch (error) {
+        return res.status(500).json({ error: 'Failed to send email' });
+    }
 };
 
+const resetPassword = async (req, res) => {
+    const { token, newPassword } = req.body;
 
-const deleteUser = async (req, res) => {
-  try {
-    const id = req.params.id;
+    // Verifique o token
+    const resetToken = await PasswordResetToken.findOne({
+        where: { token },
+        include: { model: User, as: 'user' },
+    });
 
-
-    const user = await User.findByPk(id);
-
-    if (!user) {
-      return res.status(404).json({ error: 'User not found' });
+    if (!resetToken || new Date() > resetToken.expires_at) {
+        return res.status(400).json({ error: 'Invalid or expired token' });
     }
 
+    // Encontre o usuário associado ao token
+    const user = resetToken.user;
 
-    await user.destroy();
-    res.status(204).send();
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
+    // Atualize a senha do usuário
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    user.password = hashedPassword;
+    await user.save();
+
+    // Exclua o token após o uso
+    await resetToken.destroy();
+
+    return res.status(200).json({ message: 'Password reset successfully' });
 };
 
 module.exports = {
-  index,
-  edit,
-  create,
-  update,
-  deleteUser
-};
+    register,
+    login,
+    logout,
+    forgotPassword,
+    resetPassword
+}
